@@ -12,6 +12,12 @@ class AuthStates(StatesGroup):
     name = State()
     patronymic = State()
 
+    texts = {
+        'AuthStates:surname':'Введите фамилию заново',
+        'AuthStates:name':'Введите имя заново',
+        'AuthStates:patronymic':'Введите отчество заново',
+    }
+
 
 user_private_router = Router()
 user_private_router.message.filter(ChatTypeFilter(['private']))
@@ -29,6 +35,35 @@ async def cmd_start(message: types.Message):
         # Если не авторизован, показываем кнопку "Авторизация"
         keyboard = get_auth_keyboard()
         await message.answer("Для начала работы необходимо авторизоваться:", reply_markup=keyboard)
+
+# Обработчик команды /cancel для отмены текущего процесса
+@user_private_router.message(F.text == "/cancel")
+async def cmd_cancel(message: types.Message, state: FSMContext):
+    current_state = await state.get_state()
+    if current_state is None:
+        await message.answer("Нет активного процесса для отмены.")
+        return
+
+    await state.clear()
+    await message.answer("Процесс отменен.")
+
+# Обработчик команды /back для возврата на предыдущий шаг
+@user_private_router.message(F.text == "/back")
+async def cmd_back(message: types.Message, state: FSMContext):
+    current_state = await state.get_state()
+
+    if current_state == AuthStates.surname:
+        await message.answer('Предидущего шага нет, или введите фамилию или напишите /отмена ')
+        return
+    
+    previous = None
+    for step in AuthStates.__all_states__:
+        if step.state == current_state:
+            await state.set_state(previous)
+            await message.answer(f"Вы вернулись к прошлому шагу \n {AuthStates.texts[previous.state]}")
+            return
+        previous = step
+
 
 # Обработчик нажатия на кнопку "Авторизация"
 @user_private_router.callback_query(F.data == "auth")
@@ -74,32 +109,7 @@ async def process_patronymic(message: types.Message, state: FSMContext):
     await message.answer("Теперь вы можете начать проверку:", reply_markup=keyboard)
 
 
-# Обработчик команды /cancel для отмены текущего процесса
-@user_private_router.message(F.text == "/cancel")
-async def cmd_cancel(message: types.Message, state: FSMContext):
-    current_state = await state.get_state()
-    if current_state is None:
-        await message.answer("Нет активного процесса для отмены.")
-        return
 
-    await state.clear()
-    await message.answer("Процесс отменен.")
-
-# Обработчик команды /back для возврата на предыдущий шаг
-@user_private_router.message(F.text == "/back")
-async def cmd_back(message: types.Message, state: FSMContext):
-    current_state = await state.get_state()
-
-    if current_state == AuthStates.name:
-        await state.set_state(AuthStates.surname)
-        await message.answer("Введите вашу фамилию:")
-    elif current_state == AuthStates.patronymic:
-        await state.set_state(AuthStates.name)
-        await message.answer("Введите ваше имя:")
-    # elif current_state == CheckStates.waiting_for_topic:
-    #     await message.answer("Выберите тему:")
-    else:
-        await message.answer("Невозможно вернуться назад.")
 
 
 
