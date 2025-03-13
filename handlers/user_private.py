@@ -3,14 +3,22 @@ from aiogram.filters import CommandStart, Command, or_f
 from filters.chat_types import ChatTypeFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from kbds.user_kbds import get_auth_keyboard, get_check_keyboard
+
+from kbds.user_kbds import (
+    get_auth_keyboard, 
+    get_check_keyboard,
+    get_buildings_keyboard,
+    get_questions_keyboard,
+    get_rating_keyboard,
+    get_topics_keyboard
+)
 
 users_db = {}
 
 class AuthStates(StatesGroup):
-    surname = State()
-    name = State()
-    patronymic = State()
+    surname = State()    # Ожидание фамилии
+    name = State()       # Ожидание имени
+    patronymic = State() # Ожидание отчества
 
     texts = {
         'AuthStates:surname':'Введите фамилию заново',
@@ -18,23 +26,36 @@ class AuthStates(StatesGroup):
         'AuthStates:patronymic':'Введите отчество заново',
     }
 
+class CheckStates(StatesGroup):
+    building = State()  # Ожидание выбора здания
+    topic = State()     # Ожидание выбора темы
+    question = State()  # Ожидание выбора вопроса
+    rating = State()    # Ожидание оценки
 
 user_private_router = Router()
 user_private_router.message.filter(ChatTypeFilter(['private']))
+
+"""
+
+Блок Авторизация пользователя в боте.
+
+"""
 
 @user_private_router.message(F.text == "/start")
 async def cmd_start(message: types.Message):
     user_id = message.from_user.id
 
-    # Проверяем, авторизован ли пользователь
-    if user_id in users_db:
-        # Если авторизован, показываем кнопку "Начать проверку"
-        keyboard = get_check_keyboard()
-        await message.answer("Вы авторизованы. Выберите действие:", reply_markup=keyboard)
-    else:
-        # Если не авторизован, показываем кнопку "Авторизация"
-        keyboard = get_auth_keyboard()
-        await message.answer("Для начала работы необходимо авторизоваться:", reply_markup=keyboard)
+    # # Проверяем, авторизован ли пользователь
+    # if user_id in users_db:
+    #     # Если авторизован, показываем кнопку "Начать проверку"
+    #     keyboard = get_check_keyboard()
+    #     await message.answer("Вы авторизованы. Выберите действие:", reply_markup=keyboard)
+    # else:
+    #     # Если не авторизован, показываем кнопку "Авторизация"
+    #     keyboard = get_auth_keyboard()
+    #     await message.answer("Для начала работы необходимо авторизоваться:", reply_markup=keyboard)
+    keyboard = get_check_keyboard()
+    await message.answer("Теперь вы можете начать проверку:", reply_markup=keyboard)
 
 # Обработчик команды /cancel для отмены текущего процесса
 @user_private_router.message(F.text == "/cancel")
@@ -63,7 +84,6 @@ async def cmd_back(message: types.Message, state: FSMContext):
             await message.answer(f"Вы вернулись к прошлому шагу \n {AuthStates.texts[previous.state]}")
             return
         previous = step
-
 
 # Обработчик нажатия на кнопку "Авторизация"
 @user_private_router.callback_query(F.data == "auth")
@@ -108,7 +128,100 @@ async def process_patronymic(message: types.Message, state: FSMContext):
     keyboard = get_check_keyboard()
     await message.answer("Теперь вы можете начать проверку:", reply_markup=keyboard)
 
+# Заглушка для базы данных
+fake_db = {
+    "buildings": [{"id": i, "address": f"Адрес {i}"} for i in range(1, 51)],
+    "topics": [{"id": i, "name": f"Тема {i}"} for i in range(1, 6)],
+    "questions": [{"id": i, "text": f"Вопрос {i}"} for i in range(1, 11)],
+    "users": {
+        131144684: {"id": 131144684, "surname": "Иванов", "name": "Иван", "patronymic": "Иванович"}  # Пример пользователя
+    }
+}
 
+"""
+
+Блок Проверка
+
+"""
+
+# Обработчик нажатия на кнопку "Начать проверку"
+@user_private_router.callback_query(F.data == "check")
+async def process_check(callback_query: types.CallbackQuery, state: FSMContext):
+    await callback_query.answer()
+    
+    # Получаем данные пользователя из базы данных
+    user_id = callback_query.from_user.id
+    user_data = fake_db["users"].get(user_id)
+
+    if not user_data:
+        await callback_query.message.answer("Ошибка: пользователь не найден в базе данных.")
+        return
+
+    # Сохраняем ID и ФИО пользователя в состоянии FSM
+    await state.update_data(
+        user_id=user_data["id"],
+        user_fullname=f"{user_data['surname']} {user_data['name']} {user_data['patronymic']}"
+    )
+
+    await callback_query.message.answer("Выберите здание:", reply_markup=get_buildings_keyboard(fake_db["buildings"]))
+    await state.set_state(CheckStates.building)
+
+# Обработчик выбора здания
+@user_private_router.callback_query(CheckStates.building, F.data.startswith("building_"))
+async def process_building(callback_query: types.CallbackQuery, state: FSMContext):
+    building_id = int(callback_query.data.split("_")[1])
+    await state.update_data(building_id=building_id)
+    await callback_query.answer()
+    await callback_query.message.answer("Выберите тему проверки:", reply_markup=get_topics_keyboard(fake_db["topics"]))
+    await state.set_state(CheckStates.topic)
+
+# Обработчик выбора темы
+@user_private_router.callback_query(CheckStates.topic, F.data.startswith("topic_"))
+async def process_topic(callback_query: types.CallbackQuery, state: FSMContext):
+    topic_id = int(callback_query.data.split("_")[1])
+    await state.update_data(topic_id=topic_id)
+    await callback_query.answer()
+    await callback_query.message.answer("Выберите вопрос:", reply_markup=get_questions_keyboard(fake_db["questions"]))
+    await state.set_state(CheckStates.question)
+
+# Обработчик выбора вопроса
+@user_private_router.callback_query(CheckStates.question, F.data.startswith("question_"))
+async def process_question(callback_query: types.CallbackQuery, state: FSMContext):
+    question_id = int(callback_query.data.split("_")[1])
+    await state.update_data(question_id=question_id)
+    await callback_query.answer()
+    await callback_query.message.answer("Поставьте оценку (от 0 до 2):", reply_markup=get_rating_keyboard())
+    await state.set_state(CheckStates.rating)
+
+# Обработчик выбора оценки
+@user_private_router.callback_query(CheckStates.rating, F.data.startswith("rating_"))
+async def process_rating(callback_query: types.CallbackQuery, state: FSMContext):
+    rating = int(callback_query.data.split("_")[1])
+    user_data = await state.get_data()
+    await callback_query.answer()
+
+    # Формируем результат проверки
+    result = {
+        "user_id": user_data["user_id"],  # ID пользователя
+        "user_fullname": user_data["user_fullname"],  # ФИО пользователя
+        "building_id": user_data["building_id"],
+        "topic_id": user_data["topic_id"],
+        "question_id": user_data["question_id"],
+        "rating": rating
+    }
+
+    # Сохраняем результат проверки (заглушка)
+    print("Результат проверки:", result)  # В реальном проекте сохраняем в БД
+
+    await callback_query.message.answer("Спасибо! Проверка завершена.")
+    await state.clear()
+
+# Обработчик пагинации для зданий
+@user_private_router.callback_query(F.data.startswith("buildings_page_"))
+async def process_buildings_pagination(callback_query: types.CallbackQuery, state: FSMContext):
+    page = int(callback_query.data.split("_")[2])
+    await callback_query.answer()
+    await callback_query.message.edit_reply_markup(reply_markup=get_buildings_keyboard(fake_db["buildings"], page=page))
 
 
 
