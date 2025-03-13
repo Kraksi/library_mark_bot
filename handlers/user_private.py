@@ -3,6 +3,7 @@ from aiogram.filters import CommandStart, Command, or_f
 from filters.chat_types import ChatTypeFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
+from database.bot_test_db import check_db
 
 from kbds.user_kbds import (
     get_auth_keyboard, 
@@ -55,6 +56,9 @@ async def cmd_start(message: types.Message):
     #     keyboard = get_auth_keyboard()
     #     await message.answer("Для начала работы необходимо авторизоваться:", reply_markup=keyboard)
     keyboard = get_check_keyboard()
+    flag = check_db()
+    if flag:
+        await message.answer("Check True")
     await message.answer("Теперь вы можете начать проверку:", reply_markup=keyboard)
 
 # Обработчик команды /cancel для отмены текущего процесса
