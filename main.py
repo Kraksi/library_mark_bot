@@ -18,8 +18,19 @@ dp = Dispatcher()
 
 dp.include_router(user_private_router)
 
+async def on_startup(bot):
+    run_param = False
+    if run_param:
+        await ...
+    await ...
+
+async def on_shutdown(bot):
+    print("Все пропало")
+
 #Активация старта просулшки сервера
 async def app():
+    dp.startup.register(on_startup)
+    dp.shutdown.register(on_shutdown)
     await bot.delete_webhook(drop_pending_updates=True)
     #await bot.delete_my_commands(scope=types.BotCommandScopeAllPrivateChats())
     await bot.set_my_commands(commands=private, scope=types.BotCommandScopeAllPrivateChats())
