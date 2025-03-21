@@ -2,8 +2,13 @@ from aiogram import types, Router, F
 from aiogram.filters import CommandStart, Command, or_f
 from filters.chat_types import ChatTypeFilter
 from aiogram.fsm.context import FSMContext
+from handlers.user_states import AuthStates, CheckStates
+#from database.bot_test_db import check_db
+from database.database_sqllite import get_user, get_buildings_with_unfinished_topics, get_topics_with_unfinished_questions, get_first_unfinished_question, save_result
+from database.engine_sqllite import get_session
+from kbds.inline_kbds import buildings_keyboard, topics_keyboard, question_keyboard
+from kbds.reply_kbds import navigation_keyboard
 from aiogram.fsm.state import State, StatesGroup
-from database.bot_test_db import check_db
 
 from kbds.user_kbds import (
     get_auth_keyboard, 
@@ -16,26 +21,13 @@ from kbds.user_kbds import (
 
 users_db = {}
 
-class AuthStates(StatesGroup):
-    surname = State()    # Ожидание фамилии
-    name = State()       # Ожидание имени
-    patronymic = State() # Ожидание отчества
-
-    texts = {
-        'AuthStates:surname':'Введите фамилию заново',
-        'AuthStates:name':'Введите имя заново',
-        'AuthStates:patronymic':'Введите отчество заново',
-    }
-
-class CheckStates(StatesGroup):
-    building = State()  # Ожидание выбора здания
-    topic = State()     # Ожидание выбора темы
-    question = State()  # Ожидание выбора вопроса
-    rating = State()    # Ожидание оценки
-
 user_private_router = Router()
 user_private_router.message.filter(ChatTypeFilter(['private']))
 
+class UserFSM(StatesGroup):
+    selecting_building = State()
+    selecting_topic = State()
+    answering_question = State()
 """
 
 Блок Авторизация пользователя в боте.
@@ -56,9 +48,9 @@ async def cmd_start(message: types.Message):
     #     keyboard = get_auth_keyboard()
     #     await message.answer("Для начала работы необходимо авторизоваться:", reply_markup=keyboard)
     keyboard = get_check_keyboard()
-    flag = check_db()
-    if flag:
-        await message.answer("Check True")
+    # flag = check_db()
+    # if flag:
+    #     await message.answer("Check True")
     await message.answer("Теперь вы можете начать проверку:", reply_markup=keyboard)
 
 # Обработчик команды /cancel для отмены текущего процесса
@@ -132,15 +124,6 @@ async def process_patronymic(message: types.Message, state: FSMContext):
     keyboard = get_check_keyboard()
     await message.answer("Теперь вы можете начать проверку:", reply_markup=keyboard)
 
-# Заглушка для базы данных
-fake_db = {
-    "buildings": [{"id": i, "address": f"Адрес {i}"} for i in range(1, 51)],
-    "topics": [{"id": i, "name": f"Тема {i}"} for i in range(1, 6)],
-    "questions": [{"id": i, "text": f"Вопрос {i}"} for i in range(1, 11)],
-    "users": {
-        131144684: {"id": 131144684, "surname": "Иванов", "name": "Иван", "patronymic": "Иванович"}  # Пример пользователя
-    }
-}
 
 """
 
@@ -150,95 +133,67 @@ fake_db = {
 
 # Обработчик нажатия на кнопку "Начать проверку"
 @user_private_router.callback_query(F.data == "check")
-async def process_check(callback_query: types.CallbackQuery, state: FSMContext):
-    await callback_query.answer()
-    
-    # Получаем данные пользователя из базы данных
-    user_id = callback_query.from_user.id
-    user_data = fake_db["users"].get(user_id)
+async def process_check(callback: types.CallbackQuery, state: FSMContext):
+    async with get_session() as session:
+        user = await get_user(session, callback.message.from_user.id)
+        if not user:
+            await callback.message.answer("Вы не зарегистрированы.")
+            return
+        
+        await state.update_data(user_id=user.id)
+        buildings = await get_buildings_with_unfinished_topics(session, user.id)
+        if not buildings:
+            await callback.message.answer("Нет доступных зданий.")
+            return
+        
+        await callback.message.answer("Выберите здание:", reply_markup=await buildings_keyboard(buildings))
+        await state.set_state(UserFSM.selecting_building)
 
-    if not user_data:
-        await callback_query.message.answer("Ошибка: пользователь не найден в базе данных.")
-        return
+@user_private_router.callback_query(lambda c: c.data.startswith("building_"), UserFSM.selecting_building)
+async def building_selected(callback: types.CallbackQuery, state: FSMContext):
+    async with get_session() as session:
+        building_id = int(callback.data.split('_')[1])
+        data = await state.get_data()
+        topics = await get_topics_with_unfinished_questions(session, data['user_id'], building_id)
+        
+        if not topics:
+            await callback.message.answer("Нет доступных тем.")
+            return
+        
+        await state.update_data(building_id=building_id)
+        await callback.message.answer("Выберите тему:", reply_markup=await topics_keyboard(topics))
+        await state.set_state(UserFSM.selecting_topic)
 
-    # Сохраняем ID и ФИО пользователя в состоянии FSM
-    await state.update_data(
-        user_id=user_data["id"],
-        user_fullname=f"{user_data['surname']} {user_data['name']} {user_data['patronymic']}"
-    )
+@user_private_router.callback_query(lambda c: c.data.startswith("topic_"), UserFSM.selecting_topic)
+async def topic_selected(callback: types.CallbackQuery, state: FSMContext):
+    async with get_session() as session:
+        topic_id = int(callback.data.split('_')[1])
+        data = await state.get_data()
+        question = await get_first_unfinished_question(session, data['user_id'], topic_id)
+        
+        if not question:
+            await callback.message.answer("Нет доступных вопросов.")
+            return
+        
+        await state.update_data(topic_id=topic_id, question_id=question.id)
+        await callback.message.answer(question.text, reply_markup=question_keyboard())
+        await callback.message.answer("Выберите оценку:", reply_markup=navigation_keyboard())
+        await state.set_state(UserFSM.answering_question)
 
-    await callback_query.message.answer("Выберите здание:", reply_markup=get_buildings_keyboard(fake_db["buildings"]))
-    await state.set_state(CheckStates.building)
-
-# Обработчик выбора здания
-@user_private_router.callback_query(CheckStates.building, F.data.startswith("building_"))
-async def process_building(callback_query: types.CallbackQuery, state: FSMContext):
-    building_id = int(callback_query.data.split("_")[1])
-    await state.update_data(building_id=building_id)
-    await callback_query.answer()
-    await callback_query.message.answer("Выберите тему проверки:", reply_markup=get_topics_keyboard(fake_db["topics"]))
-    await state.set_state(CheckStates.topic)
-
-# Обработчик выбора темы
-@user_private_router.callback_query(CheckStates.topic, F.data.startswith("topic_"))
-async def process_topic(callback_query: types.CallbackQuery, state: FSMContext):
-    topic_id = int(callback_query.data.split("_")[1])
-    await state.update_data(topic_id=topic_id)
-    await callback_query.answer()
-    await callback_query.message.answer("Выберите вопрос:", reply_markup=get_questions_keyboard(fake_db["questions"]))
-    await state.set_state(CheckStates.question)
-
-# Обработчик выбора вопроса
-@user_private_router.callback_query(CheckStates.question, F.data.startswith("question_"))
-async def process_question(callback_query: types.CallbackQuery, state: FSMContext):
-    question_id = int(callback_query.data.split("_")[1])
-    await state.update_data(question_id=question_id)
-    await callback_query.answer()
-    await callback_query.message.answer("Поставьте оценку (от 0 до 2):", reply_markup=get_rating_keyboard())
-    await state.set_state(CheckStates.rating)
-
-# Обработчик выбора оценки
-@user_private_router.callback_query(CheckStates.rating, F.data.startswith("rating_"))
-async def process_rating(callback_query: types.CallbackQuery, state: FSMContext):
-    rating = int(callback_query.data.split("_")[1])
-    user_data = await state.get_data()
-    await callback_query.answer()
-
-    # Формируем результат проверки
-    result = {
-        "user_id": user_data["user_id"],  # ID пользователя
-        "user_fullname": user_data["user_fullname"],  # ФИО пользователя
-        "building_id": user_data["building_id"],
-        "topic_id": user_data["topic_id"],
-        "question_id": user_data["question_id"],
-        "rating": rating
-    }
-
-    # Сохраняем результат проверки (заглушка)
-    print("Результат проверки:", result)  # В реальном проекте сохраняем в БД
-
-    await callback_query.message.answer("Спасибо! Проверка завершена.")
-    await state.clear()
-
-# Обработчик пагинации для зданий
-@user_private_router.callback_query(F.data.startswith("buildings_page_"))
-async def process_buildings_pagination(callback_query: types.CallbackQuery, state: FSMContext):
-    page = int(callback_query.data.split("_")[2])
-    await callback_query.answer()
-    await callback_query.message.edit_reply_markup(reply_markup=get_buildings_keyboard(fake_db["buildings"], page=page))
+@user_private_router.callback_query(lambda c: c.data.startswith("score_"), UserFSM.answering_question)
+async def process_answer(callback: types.CallbackQuery, state: FSMContext):
+    score = int(callback.data.split('_')[1])
+    async with get_session() as session:
+        data = await state.get_data()
+        await save_result(session, data['user_id'], data['building_id'], data['topic_id'], data['question_id'], score)
+        
+        next_question = await get_first_unfinished_question(session, data['user_id'], data['topic_id'])
+        if next_question:
+            await state.update_data(question_id=next_question.id)
+            await callback.message.answer(next_question.text, reply_markup=question_keyboard())
+        else:
+            await callback.message.answer("Вы завершили тему. Выберите действие:", reply_markup=await topics_keyboard([]))
+            await state.set_state(UserFSM.selecting_topic)
 
 
-
-
-@user_private_router.message(or_f(Command('about'), (F.text.lower() == 'о боте')))
-async def echo(message: types.Message):
-    await message.answer("Информация о боте:")
-
-@user_private_router.message(Command('adress'))
-async def echo(message: types.Message):
-    await message.answer("Список местоположений объектов:")
-
-# @user_private_router.message(F.text)
-# async def echo(message: types.Message):
-#     await message.answer("Список местоположений объектов:")
 
