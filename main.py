@@ -2,7 +2,6 @@ from aiogram import Bot, Dispatcher, types
 import asyncio
 from dotenv import find_dotenv, load_dotenv
 import os
-from database.engine_sqllite import create_tables
 load_dotenv(find_dotenv())
 
 from handlers.user_private import user_private_router
@@ -24,8 +23,7 @@ async def on_startup(bot):
     # if run_param:
     #     await ...
     # await ...
-    print("Бот запущен, создаем таблицы в базе данных...")
-    await create_tables()
+    print("Бот запущен...")
 
 async def on_shutdown(bot):
     print("Все пропало")
